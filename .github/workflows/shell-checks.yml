@@ -1,0 +1,29 @@
+name: Shell checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shell-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: POSIX shell syntax
+        run: |
+          dash -n install.sh
+          dash -n uninstall.sh
+          dash -n files/tailscale-ap-mode
+          dash -n files/tailscale-ap-mode.init
+
+      - name: ShellCheck
+        run: |
+          shellcheck -s sh install.sh uninstall.sh files/tailscale-ap-mode
+          shellcheck -s sh -e SC2096 files/tailscale-ap-mode.init
