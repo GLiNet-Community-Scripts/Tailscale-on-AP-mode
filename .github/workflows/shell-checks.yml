@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: POSIX shell syntax
         run: |
@@ -26,4 +26,6 @@ jobs:
       - name: ShellCheck
         run: |
           shellcheck -s sh install.sh uninstall.sh files/tailscale-ap-mode
-          shellcheck -s sh -e SC2096 files/tailscale-ap-mode.init
+          # START/STOP are consumed by OpenWrt /etc/rc.common, so ShellCheck
+          # cannot see their external use. SC2096 is also expected for rc.common.
+          shellcheck -s sh -e SC2034,SC2096 files/tailscale-ap-mode.init
