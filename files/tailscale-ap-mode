@@ -181,7 +181,7 @@ restart_if_enabled() {
     enabled="$(uci -q get tailscale.settings.enabled 2>/dev/null || true)"
     if [ "$enabled" = "1" ]; then
         "$TAILSCALE_INIT" enable >/dev/null 2>&1 || true
-        "$GL_TAILSCALE" restart
+        "$GL_TAILSCALE" restart || fail "GL.iNet Tailscale restart failed."
     else
         log "GL.iNet Tailscale is currently disabled; patch installed without starting it."
     fi
@@ -195,7 +195,7 @@ enable_tailscale() {
     uci set tailscale.settings.enabled='1' || fail "Could not enable tailscale.settings.enabled."
     uci commit tailscale || fail "Could not commit Tailscale UCI settings."
     "$TAILSCALE_INIT" enable >/dev/null 2>&1 || true
-    "$GL_TAILSCALE" restart
+    "$GL_TAILSCALE" restart || fail "GL.iNet Tailscale restart failed."
 
     log "Tailscale is enabled through the GL.iNet wrapper."
 }
