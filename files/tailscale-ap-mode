@@ -1,0 +1,285 @@
+#!/bin/sh
+
+# tailscale-ap-mode
+# Narrow compatibility shim for GL.iNet's /usr/bin/gl_tailscale wrapper.
+# It treats only GL access-point mode (glconfig.general.mode=ap) as router mode
+# for the vendor wrapper's non-router guard.
+
+set -u
+
+VERSION="1.0.0"
+GL_TAILSCALE="/usr/bin/gl_tailscale"
+TAILSCALE_INIT="/etc/init.d/tailscale"
+MARKER="tailscale-ap-mode"
+SYSUPGRADE_CONF="/etc/sysupgrade.conf"
+SELF_PATH="/usr/bin/tailscale-ap-mode"
+INIT_PATH="/etc/init.d/tailscale-ap-mode"
+
+log() {
+    printf '%s\n' "$*"
+}
+
+warn() {
+    printf 'WARNING: %s\n' "$*" >&2
+}
+
+fail() {
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+require_root() {
+    [ "$(id -u 2>/dev/null || echo 1)" = "0" ] || fail "Run this command as root."
+}
+
+require_glinet() {
+    [ -f /etc/config/glconfig ] || fail "GL.iNet glconfig was not found at /etc/config/glconfig."
+    [ -f "$GL_TAILSCALE" ] || fail "GL.iNet Tailscale wrapper was not found at $GL_TAILSCALE."
+    [ -x "$TAILSCALE_INIT" ] || fail "Tailscale init script was not found at $TAILSCALE_INIT."
+}
+
+make_tmp() {
+    printf '/tmp/tailscale-ap-mode.%s.%s' "$$" "$1"
+}
+
+validate_shell() {
+    file="$1"
+    if ! /bin/sh -n "$file" >/dev/null 2>&1; then
+        fail "Shell validation failed for $file; no change was installed."
+    fi
+}
+
+patch_present() {
+    grep -q "# $MARKER" "$GL_TAILSCALE" 2>/dev/null
+}
+
+apply_patch() {
+    require_root
+    require_glinet
+
+    if patch_present; then
+        log "AP-mode patch is already installed."
+        return 0
+    fi
+
+    if ! grep -q 'sys_mode=.*glconfig\.general\.mode' "$GL_TAILSCALE"; then
+        fail "Could not find GL.iNet's sys_mode assignment. Firmware layout may have changed; refusing to modify $GL_TAILSCALE."
+    fi
+
+    if grep -q '^[[:space:]]*sys_mode=["'"']router["'"'].*glconfig\.general\.mode' "$GL_TAILSCALE"; then
+        warn "$GL_TAILSCALE appears to contain an existing manual sys_mode override."
+        warn "The AP-only patch will be added, but the existing override may still enable Tailscale in other modes."
+    fi
+
+    tmp_new="$(make_tmp new)"
+
+    awk '
+        BEGIN { inserted = 0 }
+        {
+            print $0
+            if (!inserted && $0 ~ /sys_mode=.*glconfig\.general\.mode/) {
+                match($0, /^[ \t]*/)
+                indent = substr($0, RSTART, RLENGTH)
+                print indent "[ \"$sys_mode\" = \"ap\" ] && sys_mode=\"router\" # tailscale-ap-mode"
+                inserted = 1
+            }
+        }
+        END {
+            if (!inserted)
+                exit 42
+        }
+    ' "$GL_TAILSCALE" > "$tmp_new"
+    rc=$?
+
+    if [ "$rc" -ne 0 ]; then
+        rm -f "$tmp_new"
+        fail "Failed to generate a patched GL.iNet Tailscale wrapper."
+    fi
+
+    validate_shell "$tmp_new"
+
+    if ! cp "$tmp_new" "$GL_TAILSCALE"; then
+        rm -f "$tmp_new"
+        fail "Could not write $GL_TAILSCALE."
+    fi
+    chmod 0755 "$GL_TAILSCALE"
+    rm -f "$tmp_new"
+
+    patch_present || fail "Patch verification failed after writing $GL_TAILSCALE."
+    log "Installed AP-mode patch in $GL_TAILSCALE."
+}
+
+restore_patch() {
+    require_root
+    require_glinet
+
+    if ! patch_present; then
+        log "AP-mode patch is not present; nothing to restore."
+        return 0
+    fi
+
+    tmp_new="$(make_tmp restore)"
+
+    awk '
+        $0 ~ /# tailscale-ap-mode[[:space:]]*$/ { next }
+        { print $0 }
+    ' "$GL_TAILSCALE" > "$tmp_new" || {
+        rm -f "$tmp_new"
+        fail "Could not generate restored wrapper."
+    }
+
+    validate_shell "$tmp_new"
+
+    if ! cp "$tmp_new" "$GL_TAILSCALE"; then
+        rm -f "$tmp_new"
+        fail "Could not restore $GL_TAILSCALE."
+    fi
+    chmod 0755 "$GL_TAILSCALE"
+    rm -f "$tmp_new"
+
+    if patch_present; then
+        fail "Patch marker is still present after restore."
+    fi
+
+    log "Removed the AP-mode compatibility patch from $GL_TAILSCALE."
+}
+
+ensure_sysupgrade_path() {
+    path="$1"
+    touch "$SYSUPGRADE_CONF" || fail "Cannot write $SYSUPGRADE_CONF."
+    grep -Fxq "$path" "$SYSUPGRADE_CONF" 2>/dev/null || printf '%s\n' "$path" >> "$SYSUPGRADE_CONF"
+}
+
+install_persistence() {
+    require_root
+    ensure_sysupgrade_path "$SELF_PATH"
+    ensure_sysupgrade_path "$INIT_PATH"
+    log "Registered helper files for sysupgrade persistence."
+}
+
+remove_sysupgrade_path() {
+    path="$1"
+    [ -f "$SYSUPGRADE_CONF" ] || return 0
+
+    tmp_conf="$(make_tmp sysupgrade)"
+    awk -v path="$path" '$0 != path { print $0 }' "$SYSUPGRADE_CONF" > "$tmp_conf" || {
+        rm -f "$tmp_conf"
+        return 1
+    }
+    cat "$tmp_conf" > "$SYSUPGRADE_CONF"
+    rm -f "$tmp_conf"
+}
+
+remove_persistence() {
+    require_root
+    remove_sysupgrade_path "$SELF_PATH" || fail "Could not update $SYSUPGRADE_CONF."
+    remove_sysupgrade_path "$INIT_PATH" || fail "Could not update $SYSUPGRADE_CONF."
+    log "Removed sysupgrade persistence entries."
+}
+
+restart_if_enabled() {
+    enabled="$(uci -q get tailscale.settings.enabled 2>/dev/null || true)"
+    if [ "$enabled" = "1" ]; then
+        "$TAILSCALE_INIT" enable >/dev/null 2>&1 || true
+        "$GL_TAILSCALE" restart
+    else
+        log "GL.iNet Tailscale is currently disabled; patch installed without starting it."
+    fi
+}
+
+enable_tailscale() {
+    require_root
+    require_glinet
+    apply_patch
+
+    uci set tailscale.settings.enabled='1' || fail "Could not enable tailscale.settings.enabled."
+    uci commit tailscale || fail "Could not commit Tailscale UCI settings."
+    "$TAILSCALE_INIT" enable >/dev/null 2>&1 || true
+    "$GL_TAILSCALE" restart
+
+    log "Tailscale is enabled through the GL.iNet wrapper."
+}
+
+show_status() {
+    require_glinet
+
+    mode="$(uci -q get glconfig.general.mode 2>/dev/null || echo unknown)"
+    enabled="$(uci -q get tailscale.settings.enabled 2>/dev/null || echo unknown)"
+
+    log "tailscale-ap-mode version: $VERSION"
+    log "GL.iNet network mode:      $mode"
+    log "GL Tailscale enabled:      $enabled"
+
+    if patch_present; then
+        log "AP-mode patch:             installed"
+    else
+        log "AP-mode patch:             not installed"
+    fi
+
+    if pgrep tailscaled >/dev/null 2>&1; then
+        log "tailscaled process:        running"
+    else
+        log "tailscaled process:        not running"
+    fi
+
+    if command -v tailscale >/dev/null 2>&1; then
+        log ""
+        log "Tailscale status:"
+        tailscale status 2>&1 || true
+    fi
+}
+
+usage() {
+    cat <<'EOF'
+Usage: tailscale-ap-mode <command>
+
+Commands:
+  apply                Apply the AP-only GL wrapper compatibility patch
+  enable               Apply the patch, enable Tailscale, and restart it
+  restart              Re-apply the patch and restart Tailscale if enabled
+  restore              Remove only this project's patch and restart stock logic
+  status               Show GL mode, patch state, daemon state, and Tailscale status
+  install-persistence  Preserve helper/init files across GL.iNet sysupgrade
+  remove-persistence   Remove helper/init paths from /etc/sysupgrade.conf
+  version              Print helper version
+  help                 Show this help
+EOF
+}
+
+command_name="${1:-status}"
+
+case "$command_name" in
+    apply)
+        apply_patch
+        ;;
+    enable)
+        enable_tailscale
+        ;;
+    restart)
+        apply_patch
+        restart_if_enabled
+        ;;
+    restore)
+        restore_patch
+        "$GL_TAILSCALE" restart >/dev/null 2>&1 || true
+        ;;
+    status)
+        show_status
+        ;;
+    install-persistence)
+        install_persistence
+        ;;
+    remove-persistence)
+        remove_persistence
+        ;;
+    version|--version|-V)
+        log "$VERSION"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
