@@ -1,0 +1,41 @@
+#!/bin/sh /etc/rc.common
+
+# Re-apply the AP-mode shim after boot/sysupgrade, then let GL.iNet's
+# own wrapper restart Tailscale if the feature is enabled in UCI.
+
+START=99
+STOP=10
+
+start() {
+    [ -x /usr/bin/tailscale-ap-mode ] || return 0
+
+    /usr/bin/tailscale-ap-mode apply >/tmp/tailscale-ap-mode.log 2>&1 || {
+        logger -t tailscale-ap-mode "Failed to apply AP-mode Tailscale shim; see /tmp/tailscale-ap-mode.log"
+        return 1
+    }
+
+    enabled="$(uci -q get tailscale.settings.enabled 2>/dev/null)"
+    [ "$enabled" = "1" ] || return 0
+
+    /etc/init.d/tailscale enable >/dev/null 2>&1 || true
+    /usr/bin/gl_tailscale restart >>/tmp/tailscale-ap-mode.log 2>&1 || {
+        logger -t tailscale-ap-mode "GL Tailscale restart failed; see /tmp/tailscale-ap-mode.log"
+        return 1
+    }
+
+    logger -t tailscale-ap-mode "AP-mode Tailscale compatibility shim applied"
+}
+
+restart() {
+    start
+}
+
+reload() {
+    start
+}
+
+stop() {
+    # Intentionally do not stop tailscaled here. Disabling/removing this helper
+    # should not alter Tailscale state until the stock wrapper is restored.
+    return 0
+}
