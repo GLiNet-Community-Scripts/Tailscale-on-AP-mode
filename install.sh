@@ -53,16 +53,16 @@ download "$REPO_RAW/files/tailscale-ap-mode.init" "$TMP_DIR/tailscale-ap-mode.in
 
 cp "$TMP_DIR/tailscale-ap-mode" "$HELPER_DST" || fail "Could not install $HELPER_DST."
 cp "$TMP_DIR/tailscale-ap-mode.init" "$INIT_DST" || fail "Could not install $INIT_DST."
-chmod 0755 "$HELPER_DST" "$INIT_DST"
+chmod 0755 "$HELPER_DST" "$INIT_DST" || fail "Could not set executable permissions on installed files."
 
 log "Installing firmware-upgrade persistence..."
-"$HELPER_DST" install-persistence
+"$HELPER_DST" install-persistence || fail "Could not register sysupgrade persistence."
 
 log "Enabling boot service..."
-"$INIT_DST" enable
+"$INIT_DST" enable || fail "Could not enable the tailscale-ap-mode boot service."
 
 log "Applying AP-mode compatibility patch and enabling Tailscale..."
-"$HELPER_DST" enable
+"$HELPER_DST" enable || fail "Could not enable Tailscale in AP mode."
 
 log ""
 log "Installation complete."
