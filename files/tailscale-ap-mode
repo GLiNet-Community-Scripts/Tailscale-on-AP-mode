@@ -66,7 +66,7 @@ apply_patch() {
         fail "Could not find GL.iNet's sys_mode assignment. Firmware layout may have changed; refusing to modify $GL_TAILSCALE."
     fi
 
-    if grep -q '^[[:space:]]*sys_mode=["'"']router["'"'].*glconfig\.general\.mode' "$GL_TAILSCALE"; then
+    if grep -q '^[[:space:]]*sys_mode=.*router.*glconfig\.general\.mode' "$GL_TAILSCALE"; then
         warn "$GL_TAILSCALE appears to contain an existing manual sys_mode override."
         warn "The AP-only patch will be added, but the existing override may still enable Tailscale in other modes."
     fi
@@ -216,7 +216,7 @@ show_status() {
         log "AP-mode patch:             not installed"
     fi
 
-    if pgrep tailscaled >/dev/null 2>&1; then
+    if pidof tailscaled >/dev/null 2>&1; then
         log "tailscaled process:        running"
     else
         log "tailscaled process:        not running"
